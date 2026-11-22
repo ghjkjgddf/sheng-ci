@@ -26,6 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: ci
+
+      - uses: actions/checkout@v4
+        with:
           repository: UniXNU/UniXNU
           ref: 97437dcf7389484a0eeaa8067725ce743aff18ef
           path: UniXNU
@@ -57,7 +61,7 @@ jobs:
         working-directory: device
         run: |
           set -euo pipefail
-          cp ../patched/make-userdata-full.py scripts/make-userdata-full.py
+          cp ../ci/patched/make-userdata-full.py scripts/make-userdata-full.py
           python3 -m py_compile scripts/make-userdata-full.py
           grep -c DONT_CARE scripts/make-userdata-full.py
 
