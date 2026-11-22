@@ -42,7 +42,7 @@ jobs:
 
       - name: tools
         run: |
-          brew install dtc mtools ninja cmake zstd
+          brew install dtc mtools ninja cmake zstd blacktop/tap/ipsw
           python3 -m venv "$RUNNER_TEMP/py"
           "$RUNNER_TEMP/py/bin/pip" install cryptography
           echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
