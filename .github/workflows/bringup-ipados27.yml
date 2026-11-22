@@ -1,0 +1,173 @@
+# sheng / iPadOS 27.0.1 (24A446) bring-up boot image on a hosted macOS runner.
+#
+# Nothing here comes from your own repository: the device, framework and UEFI sources are
+# fetched at the pinned revisions below, so this file works in any repository. The only
+# secret it needs is UNIXNU_UNIQUE_CHIP_ID: eight hex digits, your own non-zero platform seed.
+#
+# Path: the device profile's own XnuPrelink engine with --allow-missing (bring-up), not the
+# author's strict prelink, whose prelink evidence was never published.
+name: sheng ipados 27 bring-up image
+
+on:
+  workflow_dispatch:
+    inputs:
+      init_data:
+        description: "FIRST installation: create a new Data seed (required when no saved seed exists)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sheng-bringup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 350
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 97437dcf7389484a0eeaa8067725ce743aff18ef
+          path: UniXNU
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          ref: 66421cb7bb5694843aec8de1ca3d1de4c20cca38
+          path: uefi-sheng
+          submodules: recursive
+
+      - name: device at the guide's verified commit
+        run: |
+          git init device
+          git -C device remote add origin https://github.com/KuriyamaMirai08/UniXNU-sheng.git
+          git -C device fetch --depth 1 origin a9f0500af098f8aee87c86a571638daee92caf26
+          git -C device checkout --detach FETCH_HEAD
+          git -C device submodule update --init --recursive
+          test "$(git -C device rev-parse HEAD)" = a9f0500af098f8aee87c86a571638daee92caf26
+
+      - name: tools
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcrun --sdk iphoneos --show-sdk-version
+          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          python3 -m venv "$RUNNER_TEMP/py"
+          "$RUNNER_TEMP/py/bin/pip" install cryptography
+          echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
+
+      - name: platform identity
+        env:
+          SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          if ! [[ "$SEED" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo 'Add the repository secret UNIXNU_UNIQUE_CHIP_ID: eight hex digits, your own non-zero platform seed.' >&2
+            exit 1
+          fi
+
+      - name: prepare the framework (bring-up path)
+        working-directory: device
+        env:
+          UNIXNU_DEVICE: ${{ github.workspace }}/device
+          UNIXNU_ROOT: ${{ github.workspace }}/UniXNU
+          BUILD_ROOT: ${{ github.workspace }}
+          UNIXNU_SHENG_BOOT_CANDIDATE: "1"
+          UNIXNU_SHENG_AUTHOR_AUDIT: "1"
+          ZERO_AR_DATE: "1"
+        run: |
+          python3 scripts/prepare-package-ci.py --unixnu "$UNIXNU_ROOT"
+          mkdir -p "$BUILD_ROOT/evidence"
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path(os.environ['UNIXNU_DEVICE']) / 'scripts/repro'))
+          from preserve import apply
+          apply(Path(os.environ['UNIXNU_ROOT']), Path(os.environ['BUILD_ROOT']) / 'evidence')
+          PY
+          git -C "$UNIXNU_ROOT" apply "$UNIXNU_DEVICE/patches/build/sheng-reference-archive.patch"
+          python3 scripts/prepare-sheng-author-audit.py --unixnu "$UNIXNU_ROOT" --evidence "$BUILD_ROOT/evidence"
+
+      - name: use the profile's bring-up prelink engine
+        working-directory: device
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('board.toml')
+          text = path.read_text()
+          old = '''["os_overrides"."ipados-27.0.1-24A446"."kernel"."prelink"]
+          "tool" = "scripts/sheng-strict-prelink.py"
+          "extra_args" = ["--fileset-reference", "build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf"]'''
+          new = '''["os_overrides"."ipados-27.0.1-24A446"."kernel"."prelink"]
+          # Hosted bring-up: the strict wrapper's prelink evidence is not published.
+          "tool" = "kits/XnuPrelink/emit_prelink.py"
+          "extra_args" = ["--fileset-reference", "build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf", "--allow-missing"]'''
+          if old not in text:
+            raise SystemExit('board.toml prelink override not found; the pinned commit changed')
+          path.write_text(text.replace(old, new, 1))
+          print('prelink engine: kits/XnuPrelink/emit_prelink.py --allow-missing')
+          PY
+
+      - name: stage verified sheng firmware inputs
+        working-directory: device
+        env:
+          UNIXNU_DEVICE: ${{ github.workspace }}/device
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+        run: |
+          python3 scripts/download-sheng-firmware.py --connections 16
+          python3 scripts/extract-sheng-firmware.py --delete-archive
+          python3 scripts/import-sheng-uefi.py
+
+      - name: build and package
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          UNIXNU_SHENG_BOOT_CANDIDATE: "1"
+          UNIXNU_SHENG_AUTHOR_AUDIT: "1"
+          ZERO_AR_DATE: "1"
+          INIT_DATA: ${{ inputs.init_data }}
+        run: |
+          set -euo pipefail
+          args=(--os 27 --uefi ../uefi-sheng)
+          if [ "$INIT_DATA" = "true" ]; then args+=(--init-data); fi
+          python3 scripts/extract-files.py
+          bash drivers/Ath12kWifi/tools/fetch-sources.sh
+          python3 drivers/QcaBluetooth/tools/prepare-linux.py
+          python3 scripts/stage-bluetooth-firmware.py .cache/bt-stage --fetch
+          bash scripts/package.sh "${args[@]}"
+
+      - name: build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          retention-days: 5
+          if-no-files-found: ignore
+          path: UniXNU/out/sheng/*/*/logs/
+
+      - name: images
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-27
+          retention-days: 5
+          if-no-files-found: error
+          path: |
+            UniXNU/out/sheng/*/*/boot/boot.img
+            UniXNU/out/sheng/*/*/payload/payload.img
+            UniXNU/out/sheng/*/*/kernel/kernel.macho
+            UniXNU/out/sheng/*/*/package.manifest.json
