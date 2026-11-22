@@ -53,67 +53,13 @@ jobs:
           UNIXNU_DEVICE: ${{ github.workspace }}/device
         run: python3 unixnu fetch -D ../device --os 27
 
-      - name: use a DONT_CARE-aware sparse generator
+      - name: use the DONT_CARE-aware sparse generator
         working-directory: device
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('scripts/make-userdata-full.py')
-          text = path.read_text()
-          if 'DONT_CARE' in text:
-              print('generator already patched')
-              raise SystemExit(0)
-          old_data = """    def data(self, buffer):
-              assert len(buffer) % BLOCK == 0
-              for at in range(0, len(buffer), BLOCK):
-                  block = buffer[at:at + BLOCK]
-                  if block == ZERO:
-                      self.flush_raw()
-                      self.zero_run += 1
-                  else:
-                      self.flush_zero()
-                      self.raw += block
-                      self.raw_blocks += 1
-                      if self.raw_blocks == MAX_RAW:
-                          self.flush_raw()
-              self.blocks += len(buffer) // BLOCK
-          """
-          new_data = """    def data(self, buffer):
-              # Interior zeros stay raw: fastboot turns FILL-of-zero chunks into "don't care" regions and
-              # computes byte sizes that are not block multiples (remote: Bad Buffer Size). Window sha256
-              # covers these zeros as well.
-              assert len(buffer) % BLOCK == 0
-              for at in range(0, len(buffer), BLOCK):
-                  self.raw += buffer[at:at + BLOCK]
-                  self.raw_blocks += 1
-                  if self.raw_blocks == MAX_RAW:
-                      self.flush_raw()
-              self.blocks += len(buffer) // BLOCK
-          """
-          old_zeros = """    def zeros(self, count):
-              self.flush_raw()
-              self.zero_run += count
-              self.blocks += count
-          """
-          new_zeros = """    def skip(self, count):
-              self.flush_raw()
-              self.flush_zero()
-              if count:
-                  self.out.write(struct.pack('<HHII', DONT_CARE, 0, count, 12))
-                  self.chunks += 1
-                  self.blocks += count
-          """
-          old_head = "RAW, FILL = 0xCAC1, 0xCAC2"
-          new_head = "RAW, FILL, DONT_CARE = 0xCAC1, 0xCAC2, 0xCAC3"
-          for old, new in ((old_data, new_data), (old_zeros, new_zeros), (old_head, new_head)):
-              if old not in text:
-                  raise SystemExit('generator text not found: ' + old.splitlines()[0])
-              text = text.replace(old, new, 1)
-          text = text.replace('writer.zeros(', 'writer.skip(')
-          path.write_text(text)
-          print('generator patched for DONT_CARE')
-          PY
+          set -euo pipefail
+          cp ../patched/make-userdata-full.py scripts/make-userdata-full.py
           python3 -m py_compile scripts/make-userdata-full.py
+          grep -c DONT_CARE scripts/make-userdata-full.py
 
       - name: build the userdata raw image
         working-directory: UniXNU
