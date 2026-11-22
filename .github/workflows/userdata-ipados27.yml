@@ -83,7 +83,7 @@ jobs:
           print('USERDATA_BYTES=%d' % ((u['last_lba'] - u['first_lba'] + 1) * u.get('lba_bytes', 4096)))
           PY
 
-      - name: assemble the full-partition sparse image
+      - name: assemble and validate the full-partition sparse image
         working-directory: device
         env:
           UNIXNU_DEVICE: ${{ github.workspace }}/device
@@ -115,24 +115,14 @@ jobs:
           python3 scripts/make-userdata-full.py "${dmgs[0]}" "${dmgs[1]}" \
             "$target/userdata/userdata-root.json" "$USERDATA_BYTES" artifacts/userdata-full.sparse
           ls -lh artifacts
-          zstd -T0 -3 --sparse artifacts/userdata-full.sparse -o artifacts/userdata-full.sparse.zst
-          split -b 1900m -d -a 2 artifacts/userdata-full.sparse.zst artifacts/userdata-full.sparse.zst.part
-          rm -f artifacts/userdata-full.sparse artifacts/userdata-full.sparse.zst
-          cp "$target/userdata/userdata-root.json" artifacts/
-          shasum -a 256 artifacts/* > artifacts/SHA256SUMS.txt || true
-          ls -lh artifacts
 
-      - name: validate the sparse image before uploading
-        working-directory: device
-        run: |
+          echo "== validate the sparse image =="
           python3 - <<'PY'
           import struct
           types = {0xCAC1: 'RAW', 0xCAC2: 'FILL', 0xCAC3: 'SKIP'}
-          path = 'artifacts/userdata-full.sparse'
-          with open(path, 'rb') as f:
-              header = f.read(28)
-              magic, _, _, _, _, blk = struct.unpack('<IHHHHI', header[:16])
-              total, chunks, _ = struct.unpack('<III', header[16:28])
+          with open('artifacts/userdata-full.sparse', 'rb') as f:
+              magic, _, _, _, _, blk = struct.unpack('<IHHHHI', f.read(16))
+              total, chunks, _ = struct.unpack('<III', f.read(12))
               if magic != 0xED26FF3A:
                   raise SystemExit('not a sparse image')
               seen, blocks = {}, 0
@@ -144,12 +134,22 @@ jobs:
                       raise SystemExit('FILL chunk present; fastboot rejects those')
                   if name == 'SKIP' and size != 12:
                       raise SystemExit('SKIP chunk with payload')
+                  if name == 'RAW' and size != 12 + count * blk:
+                      raise SystemExit('RAW chunk size mismatch')
                   f.seek(size - 12, 1)
                   blocks += count
           if blocks != total:
               raise SystemExit(f'block count {blocks} != header {total}')
-          print('sparse ok:', seen, 'blocks', total, 'size', total * blk / 2**30, 'GiB')
+          print('sparse ok:', seen, 'blocks', total, 'declared', total * blk / 2**30, 'GiB')
           PY
+
+          zstd -T0 -3 --sparse artifacts/userdata-full.sparse -o artifacts/userdata-full.sparse.zst
+          rm -f artifacts/userdata-full.sparse
+          split -b 1900m -d -a 2 artifacts/userdata-full.sparse.zst artifacts/userdata-full.sparse.zst.part
+          rm -f artifacts/userdata-full.sparse.zst
+          cp "$target/userdata/userdata-root.json" artifacts/
+          shasum -a 256 artifacts/* > artifacts/SHA256SUMS.txt || true
+          ls -lh artifacts
 
       - name: upload parts 1/3
         uses: actions/upload-artifact@v4
