@@ -132,6 +132,15 @@ jobs:
           python3 scripts/extract-sheng-firmware.py --delete-archive
           python3 scripts/import-sheng-uefi.py
 
+      - name: kernelcache for the Image4 archive
+        working-directory: UniXNU
+        run: |
+          set -euo pipefail
+          cache=$(python3 unixnu ipsw fetch KernelCache -D ../device --os 27 | tail -1)
+          test -f "$cache"
+          shasum -a 256 "$cache"
+          echo "UNIXNU_KERNELCACHE=$cache" >> "$GITHUB_ENV"
+
       - name: preserved first-install Data seed
         working-directory: device
         run: |
