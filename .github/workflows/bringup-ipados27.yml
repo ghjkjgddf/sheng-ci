@@ -132,6 +132,14 @@ jobs:
           python3 scripts/extract-sheng-firmware.py --delete-archive
           python3 scripts/import-sheng-uefi.py
 
+      - name: preserved first-install Data seed
+        working-directory: device
+        run: |
+          set -euo pipefail
+          curl -fsSL -o seed-data.dbr \
+            https://raw.githubusercontent.com/ghjkjgddf/UniXNU-sheng/main/seed/data.dbr
+          shasum -a 256 seed-data.dbr
+
       - name: build and package
         working-directory: device
         env:
@@ -143,8 +151,9 @@ jobs:
           INIT_DATA: ${{ inputs.init_data }}
         run: |
           set -euo pipefail
-          args=(--os 27 --uefi ../uefi-sheng)
-          if [ "$INIT_DATA" = "true" ]; then args+=(--init-data); fi
+          # --init-data cannot build a seed from the iPadOS 27 OS image (no APFS container), so the
+          # build reuses the preserved first-install seed from the host repository.
+          args=(--os 27 --uefi ../uefi-sheng --data-ramdisk "$PWD/seed-data.dbr")
           python3 scripts/extract-files.py
           bash drivers/Ath12kWifi/tools/fetch-sources.sh
           python3 drivers/QcaBluetooth/tools/prepare-linux.py
