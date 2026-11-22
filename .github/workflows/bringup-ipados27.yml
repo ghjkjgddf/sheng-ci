@@ -136,6 +136,7 @@ jobs:
         working-directory: UniXNU
         run: |
           set -euo pipefail
+          python3 unixnu fetch -D ../device --os 27
           cache=$(python3 unixnu ipsw fetch KernelCache -D ../device --os 27 | tail -1)
           test -f "$cache"
           shasum -a 256 "$cache"
